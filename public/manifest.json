@@ -1,0 +1,19 @@
+{
+    "manifest_version": 3,
+    "name": "YT Wrap — AI YouTube Summarizer",
+    "description": "Summarize YouTube videos with one click. No copy/paste. No ChatGPT login.",
+    "version": "0.0.1",
+    "permissions": ["activeTab", "scripting", "storage"],
+    "host_permissions": ["*://*.youtube.com/*"],
+    "action": {
+      "default_popup": "index.html",
+      "default_title": "Summarize this video"
+    },
+    "content_scripts": [
+      {
+        "matches": ["*://*.youtube.com/watch*"],
+        "js": ["contentScript.js"]
+      }
+    ]
+  }
+  
