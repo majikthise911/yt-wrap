@@ -1,5 +1,6 @@
 <script lang="ts">
   import OpenAI from 'openai';
+  import { marked } from 'marked';
   import { createTranscriptHtml, createSummaryHtml } from './lib/htmlTemplates';
 
   let loading = false;
@@ -324,7 +325,7 @@ ${combinedSummaries}`
       }
 
       // Create a new tab with the summary
-      const summaryHtml = createSummaryHtml(videoId, summary);
+      const summaryHtml = createSummaryHtml(videoId, String(marked.parse(summary)));
       const blob = new Blob([summaryHtml], { type: 'text/html' });
       const url = URL.createObjectURL(blob);
       chrome.tabs.create({ url });
@@ -357,7 +358,7 @@ ${combinedSummaries}`
               }
               document.body.removeChild(textArea);
             }
-            const summaryHtml = createSummaryHtml(videoId, basicSummary);
+            const summaryHtml = createSummaryHtml(videoId, String(marked.parse(basicSummary)));
             const blob = new Blob([summaryHtml], { type: 'text/html' });
             const url = URL.createObjectURL(blob);
             chrome.tabs.create({ url });
