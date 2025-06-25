@@ -205,11 +205,19 @@ Note: This is a basic summary using the first and last parts of the transcript. 
           messages: [
             {
               role: "system",
-              content: "You are a helpful assistant that creates concise, well-structured summaries of YouTube video transcripts using the Pareto Principle (80/20 rule). Focus on the 20% of content that delivers 80% of the value - the most important points, key insights, and critical details. Keep the summary clear, engaging, and actionable."
+              content: "You are a professional summarizer. Your job is to create clear, structured summaries of YouTube video transcripts using the Pareto Principle (80/20 rule). Focus on the 20% of the content that provides 80% of the value — core insights, arguments, facts, and takeaways. Use bullet points and headers. Include a TL;DR at the end. Your tone should be concise, neutral, and informative — no fluff."
             },
             {
               role: "user",
-              content: `Please provide a comprehensive summary of this YouTube video transcript using the Pareto Principle (80/20 rule). Focus on the most important 20% of content that delivers 80% of the value:\n\n${transcript}`
+              content: `Summarize the following transcript using the 80/20 rule:
+
+1. Identify and list the most important insights, arguments, or concepts.
+2. Structure the summary with clear headers and bullet points.
+3. Use concise phrasing.
+4. Include a TL;DR at the end with a 1–2 sentence high-level takeaway.
+
+Transcript:
+${transcript}`
             }
           ],
           max_tokens: 1000,
@@ -228,11 +236,14 @@ Note: This is a basic summary using the first and last parts of the transcript. 
               messages: [
                 {
                   role: "system",
-                  content: "You are a helpful assistant that creates concise summaries of text segments. Focus on the key points and main ideas."
+                  content: "You are a summarization assistant. Your job is to extract key points and main ideas from short segments of a YouTube transcript. Be concise and clear."
                 },
                 {
                   role: "user",
-                  content: `Summarize this text segment (part ${i + 1} of ${transcriptChunks.length}):\n\n${transcriptChunks[i]}`
+                  content: `Summarize the following text segment. Focus on extracting the most important points in bullet form. Avoid filler.
+
+Transcript segment (part ${i + 1} of ${transcriptChunks.length}):
+${transcriptChunks[i]}`
                 }
               ],
               max_tokens: 500,
@@ -266,11 +277,19 @@ Note: This is a basic summary using the first and last parts of the transcript. 
           messages: [
             {
               role: "system",
-              content: "You are a helpful assistant that creates concise, well-structured summaries of YouTube video transcripts using the Pareto Principle (80/20 rule). Focus on the 20% of content that delivers 80% of the value - the most important points, key insights, and critical details. Keep the summary clear, engaging, and actionable."
+              content: "You are a professional summarizer. Your job is to create clear, structured summaries of YouTube video transcripts using the Pareto Principle (80/20 rule). Focus on the 20% of the content that provides 80% of the value — core insights, arguments, facts, and takeaways. Use bullet points and headers. Include a TL;DR at the end. Your tone should be concise, neutral, and informative — no fluff."
             },
             {
               role: "user",
-              content: `Please provide a comprehensive summary of this YouTube video using the Pareto Principle (80/20 rule). This is a summary of summaries from a long video:\n\n${combinedSummaries}`
+              content: `Summarize the following transcript using the 80/20 rule:
+
+1. Identify and list the most important insights, arguments, or concepts.
+2. Structure the summary with clear headers and bullet points.
+3. Use concise phrasing.
+4. Include a TL;DR at the end with a 1–2 sentence high-level takeaway.
+
+Transcript:
+${combinedSummaries}`
             }
           ],
           max_tokens: 1000,
