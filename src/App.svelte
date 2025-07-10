@@ -202,7 +202,7 @@ Note: This is a basic summary using the first and last parts of the transcript. 
       if (transcriptChunks.length === 1) {
         // Single chunk - use normal approach
         const completion = await freshOpenAI.chat.completions.create({
-          model: "gpt-3.5-turbo",
+          model: "gpt-4o-mini",
           messages: [
             {
               role: "system",
@@ -233,7 +233,7 @@ ${transcript}`
         for (let i = 0; i < transcriptChunks.length; i++) {
           try {
             const completion = await freshOpenAI.chat.completions.create({
-              model: "gpt-3.5-turbo",
+              model: "gpt-4o-mini",
               messages: [
                 {
                   role: "system",
@@ -274,7 +274,7 @@ ${transcriptChunks[i]}`
         // Now summarize all the chunk summaries
         const combinedSummaries = chunkSummaries.join('\n\n');
         const finalCompletion = await freshOpenAI.chat.completions.create({
-          model: "gpt-3.5-turbo",
+          model: "gpt-4o-mini",
           messages: [
             {
               role: "system",
