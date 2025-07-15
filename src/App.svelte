@@ -109,6 +109,16 @@
       if (!videoId) throw new Error('No video ID found. Make sure you are on a YouTube video page.');
       if (!transcript) throw new Error('No transcript found. This video might not have captions available, or you may need to open the transcript panel first.');
 
+      // Caching: Check for cached summary
+      const cachedKey = `summary_${videoId}`;
+      const cached = await chrome.storage.local.get([cachedKey]);
+      if (cached[cachedKey]) {
+        summaryContent = marked.parse(cached[cachedKey]);
+        showSummary = true;
+        summaryLoading = false;
+        return;
+      }
+
       let apiKey = savedApiKey;
       if (!apiKey) {
         const newApiKey = prompt('Please enter your OpenAI API key:');
@@ -140,7 +150,7 @@
         apiKey: apiKey.trim(),
         dangerouslyAllowBrowser: true
       });
-      function chunkTranscript(text: string, maxTokens: number = 3000) {
+      function chunkTranscript(text: string, maxTokens: number = 8000) {
         const words = text.split(' ');
         const chunks = [];
         let currentChunk = '';
@@ -170,36 +180,35 @@
               content: `Summarize the following transcript using the 80/20 rule:\n\n1. Identify and list the most important insights, arguments, or concepts.\n2. Structure the summary with clear headers and bullet points.\n3. Use concise phrasing.\n4. Include a TL;DR at the end with a 1–2 sentence high-level takeaway.\n\nTranscript:\n${transcript}`
             }
           ],
-          max_tokens: 1000,
-          temperature: 0.7,
+          max_tokens: 800,
+          temperature: 0.5,
         });
         summary = completion.choices[0]?.message?.content || '';
       } else {
-        const chunkSummaries = [];
-        for (let i = 0; i < transcriptChunks.length; i++) {
-          try {
-            const completion = await freshOpenAI.chat.completions.create({
-              model: "gpt-4o-mini",
-              messages: [
-                {
-                  role: "system",
-                  content: "You are a summarization assistant. Your job is to extract key points and main ideas from short segments of a YouTube transcript. Be concise and clear."
-                },
-                {
-                  role: "user",
-                  content: `Summarize the following text segment. Focus on extracting the most important points in bullet form. Avoid filler.\n\nTranscript segment (part ${i + 1} of ${transcriptChunks.length}):\n${transcriptChunks[i]}`
-                }
-              ],
-              max_tokens: 500,
-              temperature: 0.7,
-            });
-            const chunkSummary = completion.choices[0]?.message?.content || '';
-            chunkSummaries.push(chunkSummary);
-            await new Promise(resolve => setTimeout(resolve, 1000));
-          } catch (error) {
-            chunkSummaries.push(`[Error summarizing part ${i + 1}: ${error instanceof Error ? error.message : 'Unknown error'}]`);
-          }
-        }
+        const chunkSummaries = await Promise.all(
+          transcriptChunks.map(async (chunk, i) => {
+            try {
+              const completion = await freshOpenAI.chat.completions.create({
+                model: "gpt-4o-mini",
+                messages: [
+                  {
+                    role: "system",
+                    content: "You are a summarization assistant. Your job is to extract key points and main ideas from short segments of a YouTube transcript. Be concise and clear."
+                  },
+                  {
+                    role: "user",
+                    content: `Summarize the following text segment. Focus on extracting the most important points in bullet form. Avoid filler.\n\nTranscript segment (part ${i + 1} of ${transcriptChunks.length}):\n${chunk}`
+                  }
+                ],
+                max_tokens: 800,
+                temperature: 0.5,
+              });
+              return completion.choices[0]?.message?.content || '';
+            } catch (error) {
+              return `[Error summarizing part ${i + 1}: ${error instanceof Error ? error.message : 'Unknown error'}]`;
+            }
+          })
+        );
         const combinedSummaries = chunkSummaries.join('\n\n');
         const finalCompletion = await freshOpenAI.chat.completions.create({
           model: "gpt-4o-mini",
@@ -213,12 +222,14 @@
               content: `Summarize the following transcript using the 80/20 rule:\n\n1. Identify and list the most important insights, arguments, or concepts.\n2. Structure the summary with clear headers and bullet points.\n3. Use concise phrasing.\n4. Include a TL;DR at the end with a 1–2 sentence high-level takeaway.\n\nTranscript:\n${combinedSummaries}`
             }
           ],
-          max_tokens: 1000,
-          temperature: 0.7,
+          max_tokens: 800,
+          temperature: 0.5,
         });
         summary = finalCompletion.choices[0]?.message?.content || '';
       }
       if (!summary) throw new Error('No summary generated');
+      // Cache the new summary
+      await chrome.storage.local.set({ [cachedKey]: summary });
       summaryContent = marked.parse(summary);
       showSummary = true;
       showTranscript = false;
@@ -229,8 +240,11 @@
     }
   }
 
-  function handleRedoSummary() {
-    handleGenerateSummary();
+  async function handleRefreshSummary() {
+    if (!videoId) return;
+    const cachedKey = `summary_${videoId}`;
+    await chrome.storage.local.remove([cachedKey]);
+    await handleGenerateSummary();
   }
 </script>
 
@@ -291,7 +305,7 @@
       <h2 class="text-md font-semibold mb-2">AI Summary</h2>
       <div class="bg-gray-100 rounded p-2 text-sm overflow-x-auto summary-html">{@html summaryContent}</div>
       <button on:click={copySummary} class="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded mt-2 text-xs">Copy Summary</button>
-      <button on:click={handleRedoSummary} class="bg-green-500 hover:bg-green-600 text-white px-3 py-1 rounded mt-2 text-xs ml-2">Redo Summary</button>
+      <button on:click={handleRefreshSummary} class="bg-yellow-500 hover:bg-yellow-600 text-white px-3 py-1 rounded mt-2 text-xs ml-2">Refresh Summary</button>
     </div>
   {/if}
 
