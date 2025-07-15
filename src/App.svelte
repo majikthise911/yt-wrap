@@ -448,7 +448,7 @@
       queryResponseContent = marked.parse(answer);
       showQueryResponse = true;
       // Save to Q&A log
-      const newQA = { question: userQuery.trim(), answer };
+      const newQA = { question: userQuery.trim(), answer, timestamp: Date.now() };
       qaLog = [...qaLog, newQA];
       await chrome.storage.local.set({ [qaKey]: qaLog });
     } catch (err) {
@@ -556,7 +556,12 @@
           <ul class="space-y-2">
             {#each qaLog as qa}
               <li class="bg-gray-50 rounded p-2 text-xs">
-                <div class="font-semibold text-gray-700 mb-1">Q: {qa.question}</div>
+                <div class="font-semibold text-gray-700 mb-1">
+                  Q: {qa.question}
+                  {#if qa.timestamp}
+                    <span class="text-gray-400 ml-2">({new Date(qa.timestamp).toLocaleString()})</span>
+                  {/if}
+                </div>
                 <div class="summary-html">{@html marked.parse(qa.answer)}</div>
               </li>
             {/each}
