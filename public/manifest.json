@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
-    "name": "YT Wrap — AI YouTube Summarizer",
-    "description": "Summarize YouTube videos with one click. No copy/paste. No ChatGPT login.",
+    "name": "TLDW",
+    "description": "Too Long Didn't Watch: Summarize YouTube videos instantly.",
     "version": "0.0.1",
     "permissions": ["activeTab", "scripting", "storage"],
     "host_permissions": ["*://*.youtube.com/*"],

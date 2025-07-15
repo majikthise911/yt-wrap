@@ -2,6 +2,7 @@
   import OpenAI from 'openai';
   import { marked } from 'marked';
   import { createTranscriptHtml } from './lib/htmlTemplates';
+  import { onMount } from 'svelte';
 
   let loading = false;
   let error = '';
@@ -50,6 +51,28 @@
 
   // Load API key when component mounts
   loadSavedApiKey();
+
+  // On mount, auto-load cached summary for current video if available
+  onMount(async () => {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab.id) return;
+      const response = await chrome.tabs.sendMessage(tab.id, { type: 'GET_VIDEO_ID' });
+      videoId = response.videoId;
+      if (!videoId) return;
+      const cachedKey = `summary_${videoId}`;
+      const cached = await chrome.storage.local.get([cachedKey]);
+      if (cached[cachedKey]) {
+        summaryContent = marked.parse(cached[cachedKey]);
+        showSummary = true;
+        showTranscript = false;
+        summaryLoading = false;
+        progressMessage = 'Loaded from cache.';
+      }
+    } catch (e) {
+      // Ignore errors (e.g., not on a YouTube page)
+    }
+  });
 
   async function handleShowTranscript() {
     loading = true;
@@ -276,8 +299,8 @@
   }
 </script>
 
-<main class="p-4 w-80">
-  <h1 class="text-lg font-bold mb-2">YT Wrap</h1>
+<main class="p-4 w-[500px]">
+  <h1 class="text-lg font-bold mb-2">TLDW</h1>
   <button
     on:click={handleShowTranscript}
     disabled={loading}
@@ -323,7 +346,7 @@
   {#if showTranscript}
     <div class="mt-4">
       <h2 class="text-md font-semibold mb-2">Full Transcript</h2>
-      <pre class="bg-gray-100 rounded p-2 text-sm overflow-x-auto whitespace-pre-wrap">{transcriptContent}</pre>
+      <pre class="bg-gray-100 rounded p-2 text-sm overflow-x-auto whitespace-pre-wrap w-full">{transcriptContent}</pre>
       <button on:click={copyTranscript} class="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded mt-2 text-xs">Copy Transcript</button>
     </div>
   {/if}
@@ -331,7 +354,7 @@
   {#if showSummary}
     <div class="mt-4">
       <h2 class="text-md font-semibold mb-2">AI Summary</h2>
-      <div class="bg-gray-100 rounded p-2 text-sm overflow-x-auto summary-html">{@html summaryContent}</div>
+      <div class="bg-gray-100 rounded p-2 text-sm overflow-x-auto summary-html w-full">{@html summaryContent}</div>
       <button on:click={copySummary} class="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded mt-2 text-xs">Copy Summary</button>
       <button on:click={handleRefreshSummary} class="bg-yellow-500 hover:bg-yellow-600 text-white px-3 py-1 rounded mt-2 text-xs ml-2">Refresh Summary</button>
     </div>
