@@ -15,6 +15,8 @@
   let transcriptContent = '';
   let summaryContent = '';
   let videoId = '';
+  let progress = 0;
+  let progressMessage = '';
 
   // Initialize OpenAI client
   const openai = new OpenAI({
@@ -100,6 +102,8 @@
     showTranscript = false;
     transcriptContent = '';
     summaryContent = '';
+    progress = 0;
+    progressMessage = '';
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab.id) throw new Error('No active tab found');
@@ -116,8 +120,10 @@
         summaryContent = marked.parse(cached[cachedKey]);
         showSummary = true;
         summaryLoading = false;
+        progressMessage = 'Loaded from cache.';
         return;
       }
+      progressMessage = 'Generating new summary...';
 
       let apiKey = savedApiKey;
       if (!apiKey) {
@@ -185,30 +191,49 @@
         });
         summary = completion.choices[0]?.message?.content || '';
       } else {
-        const chunkSummaries = await Promise.all(
-          transcriptChunks.map(async (chunk, i) => {
-            try {
-              const completion = await freshOpenAI.chat.completions.create({
-                model: "gpt-4o-mini",
-                messages: [
-                  {
-                    role: "system",
-                    content: "You are a summarization assistant. Your job is to extract key points and main ideas from short segments of a YouTube transcript. Be concise and clear."
-                  },
-                  {
-                    role: "user",
-                    content: `Summarize the following text segment. Focus on extracting the most important points in bullet form. Avoid filler.\n\nTranscript segment (part ${i + 1} of ${transcriptChunks.length}):\n${chunk}`
+        // Progress indicator and batching for multi-chunk
+        progress = 0;
+        const totalChunks = transcriptChunks.length;
+        const batchSize = 5;
+        let chunkSummaries: string[] = [];
+        for (let batchStart = 0; batchStart < totalChunks; batchStart += batchSize) {
+          const batch = transcriptChunks.slice(batchStart, batchStart + batchSize);
+          const batchResults = await Promise.all(
+            batch.map(async (chunk, i) => {
+              let attempts = 0;
+              while (attempts < 3) {
+                try {
+                  const completion = await freshOpenAI.chat.completions.create({
+                    model: "gpt-4o-mini",
+                    messages: [
+                      {
+                        role: "system",
+                        content: "You are a summarization assistant. Your job is to extract key points and main ideas from short segments of a YouTube transcript. Be concise and clear."
+                      },
+                      {
+                        role: "user",
+                        content: `Summarize the following text segment. Focus on extracting the most important points in bullet form. Avoid filler.\n\nTranscript segment (part ${batchStart + i + 1} of ${totalChunks}):\n${chunk}`
+                      }
+                    ],
+                    max_tokens: 800,
+                    temperature: 0.5,
+                  });
+                  progress = Math.round(((batchStart + i + 1) / totalChunks) * 100);
+                  return completion.choices[0]?.message?.content || '';
+                } catch (error: any) {
+                  if (error?.status === 429 || (error?.message && error.message.includes('rate limit'))) {
+                    attempts++;
+                    await new Promise(res => setTimeout(res, 1000 * attempts)); // Exponential backoff
+                  } else {
+                    return `[Error summarizing part ${batchStart + i + 1}: ${error instanceof Error ? error.message : 'Unknown error'}]`;
                   }
-                ],
-                max_tokens: 800,
-                temperature: 0.5,
-              });
-              return completion.choices[0]?.message?.content || '';
-            } catch (error) {
-              return `[Error summarizing part ${i + 1}: ${error instanceof Error ? error.message : 'Unknown error'}]`;
-            }
-          })
-        );
+                }
+              }
+              return `[Error summarizing part ${batchStart + i + 1}: Rate limit exceeded after 3 attempts]`;
+            })
+          );
+          chunkSummaries = chunkSummaries.concat(batchResults);
+        }
         const combinedSummaries = chunkSummaries.join('\n\n');
         const finalCompletion = await freshOpenAI.chat.completions.create({
           model: "gpt-4o-mini",
@@ -233,8 +258,11 @@
       summaryContent = marked.parse(summary);
       showSummary = true;
       showTranscript = false;
+      progress = 100;
+      progressMessage = 'Summary generated.';
     } catch (err) {
       summaryError = err instanceof Error ? err.message : 'An error occurred';
+      progressMessage = '';
     } finally {
       summaryLoading = false;
     }
@@ -306,6 +334,19 @@
       <div class="bg-gray-100 rounded p-2 text-sm overflow-x-auto summary-html">{@html summaryContent}</div>
       <button on:click={copySummary} class="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded mt-2 text-xs">Copy Summary</button>
       <button on:click={handleRefreshSummary} class="bg-yellow-500 hover:bg-yellow-600 text-white px-3 py-1 rounded mt-2 text-xs ml-2">Refresh Summary</button>
+    </div>
+  {/if}
+  {#if summaryLoading || progressMessage}
+    <div class="mt-2">
+      {#if progressMessage}
+        <p class="text-gray-700 text-xs">{progressMessage}</p>
+      {/if}
+      {#if summaryLoading && progress > 0 && progress < 100}
+        <div class="w-full bg-gray-200 rounded h-2 mt-1">
+          <div class="bg-blue-500 h-2 rounded" style="width: {progress}%"></div>
+        </div>
+        <p class="text-xs text-gray-500 mt-1">{progress}% complete</p>
+      {/if}
     </div>
   {/if}
 
