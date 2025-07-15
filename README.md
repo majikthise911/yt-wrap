@@ -1,47 +1,82 @@
-# Svelte + TS + Vite
+# TLDW (Too Long Didn't Watch)
 
-This template should help get you started developing with Svelte and TypeScript in Vite.
+TLDW is a Chrome extension that uses OpenAI to instantly summarize YouTube videos and answer your custom questions about their content. No more scrubbing through long videos—get the key points and answers you need, fast!
 
-## Recommended IDE Setup
+## Features
 
-[VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode).
+- **AI-Powered YouTube Summaries:**
+  - Generate concise, structured summaries of any YouTube video using GPT-4o-mini.
+  - Summaries use the Pareto Principle (80/20 rule) to focus on the most valuable content.
+- **Transcript Extraction:**
+  - Instantly extract the full transcript from the current YouTube video.
+- **Summary Caching:**
+  - Summaries are cached per video for instant recall—no need to re-generate unless you want to refresh.
+- **Ask Questions About the Video:**
+  - Type any question about the video (e.g., "What does the speaker say about climate change?") and get an AI-generated answer based on the transcript.
+- **Q&A Caching and Log:**
+  - All questions and answers are cached per video, with a log showing previous Q&As and timestamps.
+  - If you ask the same question again, the cached answer is shown instantly.
+- **API Key Management:**
+  - Securely store and update your OpenAI API key in Chrome storage. Only prompted if no key is set.
+- **Copy to Clipboard:**
+  - Copy the transcript, summary, or any answer with one click.
+- **Progress Feedback:**
+  - See a progress bar and percentage during long summary generations.
+- **Automatic Resume:**
+  - When reopening the popup, cached summaries and Q&A logs are shown automatically for the current video.
+- **Modern, Responsive UI:**
+  - Clean, readable layout with clear sectioning for transcript, summary, and Q&A.
 
-## Need an official Svelte framework?
+## How to Use
 
-Check out [SvelteKit](https://github.com/sveltejs/kit#readme), which is also powered by Vite. Deploy anywhere with its serverless-first approach and adapt to various platforms, with out of the box support for TypeScript, SCSS, and Less, and easily-added support for mdsvex, GraphQL, PostCSS, Tailwind CSS, and more.
+1. **Install the Extension:**
+   - Load the unpacked extension in Chrome (see below for setup).
+2. **Set Your OpenAI API Key:**
+   - Click the key button and enter your OpenAI API key (starts with `sk-`).
+3. **Go to Any YouTube Video:**
+   - Open a video you want to summarize.
+4. **Open the TLDW Popup:**
+   - Click the TLDW extension icon in your Chrome toolbar.
+5. **Generate a Summary:**
+   - Click "Generate AI Summary". Wait for the summary to appear (progress bar shows status).
+   - The summary is cached for instant recall next time.
+6. **Ask Questions:**
+   - Type your question in the input below the summary and click "Ask Question about Transcript".
+   - The answer appears below, and is saved in the Q&A log for that video.
+7. **Copy Content:**
+   - Use the "Copy" buttons to copy the transcript, summary, or any answer.
+8. **Refresh Summary:**
+   - Click "Refresh Summary" to force a new summary (e.g., if the video transcript changes).
 
-## Technical considerations
+## Setup & Installation
 
-**Why use this over SvelteKit?**
+1. **Clone this repo and install dependencies:**
+   ```bash
+   npm install
+   ```
+2. **Build the extension:**
+   ```bash
+   npm run build
+   ```
+3. **Load in Chrome:**
+   - Go to `chrome://extensions/`
+   - Enable "Developer mode"
+   - Click "Load unpacked" and select the `dist` folder
 
-- It brings its own routing solution which might not be preferable for some users.
-- It is first and foremost a framework that just happens to use Vite under the hood, not a Vite app.
+## Technical Notes
+- Uses Svelte, TypeScript, and Vite for a modern, fast UI.
+- All AI features use OpenAI's GPT-4o-mini via your own API key (never sent to any server except OpenAI).
+- Caching is handled via Chrome's local storage.
+- No data is sent anywhere except OpenAI (for summaries/Q&A) and Chrome storage (for caching).
 
-This template contains as little as possible to get started with Vite + TypeScript + Svelte, while taking into account the developer experience with regards to HMR and intellisense. It demonstrates capabilities on par with the other `create-vite` templates and is a good starting point for beginners dipping their toes into a Vite + Svelte project.
+## Recent Features & Changes
+- Complete speed optimizations (chunking, parallelization, parameter tuning, caching)
+- Added Q&A feature with persistent log and instant recall
+- Improved API key UX (no repeated prompts)
+- Enhanced progress feedback and error handling
+- UI/UX improvements: wider popup, better answer/question placement, timestamps, and more
+- Rebranding from YT Wrap to TLDW
 
-Should you later need the extended capabilities and extensibility provided by SvelteKit, the template has been structured similarly to SvelteKit so that it is easy to migrate.
+---
 
-**Why `global.d.ts` instead of `compilerOptions.types` inside `jsconfig.json` or `tsconfig.json`?**
-
-Setting `compilerOptions.types` shuts out all other types not explicitly listed in the configuration. Using triple-slash references keeps the default TypeScript setting of accepting type information from the entire workspace, while also adding `svelte` and `vite/client` type information.
-
-**Why include `.vscode/extensions.json`?**
-
-Other templates indirectly recommend extensions via the README, but this file allows VS Code to prompt the user to install the recommended extension upon opening the project.
-
-**Why enable `allowJs` in the TS template?**
-
-While `allowJs: false` would indeed prevent the use of `.js` files in the project, it does not prevent the use of JavaScript syntax in `.svelte` files. In addition, it would force `checkJs: false`, bringing the worst of both worlds: not being able to guarantee the entire codebase is TypeScript, and also having worse typechecking for the existing JavaScript. In addition, there are valid use cases in which a mixed codebase may be relevant.
-
-**Why is HMR not preserving my local component state?**
-
-HMR state preservation comes with a number of gotchas! It has been disabled by default in both `svelte-hmr` and `@sveltejs/vite-plugin-svelte` due to its often surprising behavior. You can read the details [here](https://github.com/rixo/svelte-hmr#svelte-hmr).
-
-If you have state that's important to retain within a component, consider creating an external store which would not be replaced by HMR.
-
-```ts
-// store.ts
-// An extremely simple external store
-import { writable } from 'svelte/store'
-export default writable(0)
-```
+Enjoy faster, smarter YouTube learning with TLDW!
