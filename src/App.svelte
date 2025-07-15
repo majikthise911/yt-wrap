@@ -19,6 +19,13 @@
   let progress = 0;
   let progressMessage = '';
 
+  let queryLoading = false;
+  let queryError = '';
+  let showQueryResponse = false;
+  let userQuery = '';
+  let queryResponseContent = '';
+  let qaLog = [];
+
   // Initialize OpenAI client
   const openai = new OpenAI({
     apiKey: '', // This will be set by the user
@@ -52,7 +59,7 @@
   // Load API key when component mounts
   loadSavedApiKey();
 
-  // On mount, auto-load cached summary for current video if available
+  // On mount, auto-load cached summary and Q&A log for current video if available
   onMount(async () => {
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -69,6 +76,10 @@
         summaryLoading = false;
         progressMessage = 'Loaded from cache.';
       }
+      // Load Q&A log
+      const qaKey = `qa_${videoId}`;
+      const qaCached = await chrome.storage.local.get([qaKey]);
+      qaLog = qaCached[qaKey] || [];
     } catch (e) {
       // Ignore errors (e.g., not on a YouTube page)
     }
@@ -156,16 +167,6 @@
           return;
         }
         apiKey = newApiKey;
-      } else {
-        const useSavedKey = confirm(`Use saved API key? (${apiKey.substring(0, 8)}...)\n\nClick OK to use saved key, or Cancel to enter a new one.`);
-        if (!useSavedKey) {
-          const newApiKey = prompt('Please enter your new OpenAI API key:');
-          if (!newApiKey) {
-            summaryError = 'API key is required to generate summary.';
-            return;
-          }
-          apiKey = newApiKey;
-        }
       }
       if (!apiKey.startsWith('sk-') || apiKey.length < 20) {
         summaryError = 'Invalid API key format. Please enter a valid OpenAI API key that starts with "sk-".';
@@ -297,6 +298,165 @@
     await chrome.storage.local.remove([cachedKey]);
     await handleGenerateSummary();
   }
+
+  function copyQueryResponse() {
+    if (queryResponseContent) {
+      const plain = new DOMParser().parseFromString(queryResponseContent, 'text/html').body.textContent || '';
+      navigator.clipboard.writeText(plain).catch(() => {});
+    }
+  }
+
+  async function handleAskQuestion() {
+    queryLoading = true;
+    queryError = '';
+    showQueryResponse = false;
+    queryResponseContent = '';
+    try {
+      // Reuse transcript fetching logic
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab.id) throw new Error('No active tab found');
+      const response = await chrome.tabs.sendMessage(tab.id, { type: 'GET_VIDEO_ID' });
+      videoId = response.videoId;
+      const transcript = response.transcript;
+      if (!videoId) throw new Error('No video ID found. Make sure you are on a YouTube video page.');
+      if (!transcript) throw new Error('No transcript found. This video might not have captions available, or you may need to open the transcript panel first.');
+
+      // API key handling (reuse from summary)
+      let apiKey = savedApiKey;
+      if (!apiKey) {
+        const newApiKey = prompt('Please enter your OpenAI API key:');
+        if (!newApiKey) {
+          queryError = 'API key is required.';
+          return;
+        }
+        apiKey = newApiKey;
+      }
+      if (!apiKey.startsWith('sk-') || apiKey.length < 20) {
+        queryError = 'Invalid API key format.';
+        return;
+      }
+      if (apiKey !== savedApiKey) {
+        await saveApiKey(apiKey);
+      }
+      openai.apiKey = apiKey.trim();
+      const freshOpenAI = new OpenAI({
+        apiKey: apiKey.trim(),
+        dangerouslyAllowBrowser: true
+      });
+
+      if (!userQuery || userQuery.trim().length < 2) {
+        queryError = 'Please enter a question.';
+        return;
+      }
+
+      // Check for cached answer (case-insensitive match)
+      const qaKey = `qa_${videoId}`;
+      const qaCached = await chrome.storage.local.get([qaKey]);
+      qaLog = qaCached[qaKey] || [];
+      const cachedQA = qaLog.find(q => q.question.trim().toLowerCase() === userQuery.trim().toLowerCase());
+      if (cachedQA) {
+        queryResponseContent = marked.parse(cachedQA.answer);
+        showQueryResponse = true;
+        queryLoading = false;
+        return;
+      }
+
+      // Reuse chunking function
+      function chunkTranscript(text, maxTokens = 8000) {
+        const words = text.split(' ');
+        const chunks = [];
+        let currentChunk = '';
+        for (const word of words) {
+          if ((currentChunk + ' ' + word).length > maxTokens) {
+            if (currentChunk) chunks.push(currentChunk.trim());
+            currentChunk = word;
+          } else {
+            currentChunk += (currentChunk ? ' ' : '') + word;
+          }
+        }
+        if (currentChunk) chunks.push(currentChunk.trim());
+        return chunks;
+      }
+      const transcriptChunks = chunkTranscript(transcript);
+
+      let answer = '';
+      if (transcriptChunks.length === 1) {
+        const completion = await freshOpenAI.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [
+            {
+              role: "system",
+              content: "You are a helpful assistant that answers questions accurately based only on the provided transcript. Be concise, neutral, and stick to the facts from the text. If the question can't be answered from the transcript, say so."
+            },
+            {
+              role: "user",
+              content: `Answer the following question based on this transcript:\nQuestion: ${userQuery}\n\nTranscript:\n${transcript}`
+            }
+          ],
+          max_tokens: 800,
+          temperature: 0.5,
+        });
+        answer = completion.choices[0]?.message?.content || '';
+      } else {
+        // Chunk handling: Summarize chunks first (reuse parallelization from optimizations)
+        const chunkSummaries = await Promise.all(
+          transcriptChunks.map(async (chunk, i) => {
+            try {
+              const completion = await freshOpenAI.chat.completions.create({
+                model: "gpt-4o-mini",
+                messages: [
+                  {
+                    role: "system",
+                    content: "Extract key points from this transcript segment relevant to potential questions."
+                  },
+                  {
+                    role: "user",
+                    content: `Summarize key points in bullet form:\n${chunk}`
+                  }
+                ],
+                max_tokens: 500,
+                temperature: 0.5,
+              });
+              return completion.choices[0]?.message?.content || '';
+            } catch (error) {
+              return `[Error in part ${i + 1}]`;
+            }
+          })
+        );
+        const combinedSummaries = chunkSummaries.join('\n\n');
+
+        // Final query on combined summaries
+        const finalCompletion = await freshOpenAI.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [
+            {
+              role: "system",
+              content: "You are a helpful assistant that answers questions accurately based only on the provided summarized transcript. Be concise, neutral, and stick to the facts. If the question can't be answered, say so."
+            },
+            {
+              role: "user",
+              content: `Answer the following question based on this summarized transcript:\nQuestion: ${userQuery}\n\nSummarized Transcript:\n${combinedSummaries}`
+            }
+          ],
+          max_tokens: 800,
+          temperature: 0.5,
+        });
+        answer = finalCompletion.choices[0]?.message?.content || '';
+      }
+
+      if (!answer) throw new Error('No answer generated');
+      queryResponseContent = marked.parse(answer);
+      showQueryResponse = true;
+      // Save to Q&A log
+      const newQA = { question: userQuery.trim(), answer };
+      qaLog = [...qaLog, newQA];
+      await chrome.storage.local.set({ [qaKey]: qaLog });
+    } catch (err) {
+      queryError = err instanceof Error ? err.message : 'An error occurred';
+    } finally {
+      queryLoading = false;
+    }
+  }
 </script>
 
 <main class="p-4 w-[500px]">
@@ -358,6 +518,52 @@
       <button on:click={copySummary} class="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded mt-2 text-xs">Copy Summary</button>
       <button on:click={handleRefreshSummary} class="bg-yellow-500 hover:bg-yellow-600 text-white px-3 py-1 rounded mt-2 text-xs ml-2">Refresh Summary</button>
     </div>
+    <!-- Ask Question UI and Answer Display -->
+    <div class="mt-4">
+      <input
+        type="text"
+        placeholder="Ask a question about the transcript..."
+        bind:value={userQuery}
+        class="w-full p-2 border rounded mb-2"
+        on:keydown={(e) => { if (e.key === 'Enter') handleAskQuestion(); }}
+        disabled={queryLoading}
+      />
+      <button
+        on:click={handleAskQuestion}
+        disabled={queryLoading}
+        class="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 text-white px-4 py-2 rounded flex items-center w-full mb-3"
+      >
+        {#if queryLoading}
+          <svg class="animate-spin h-5 w-5 mr-2 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path></svg>
+          Answering question...
+        {:else}
+          Ask Question about Transcript
+        {/if}
+      </button>
+      {#if showQueryResponse}
+        <div class="mt-4">
+          <h2 class="text-md font-semibold mb-2">Answer to: {userQuery}</h2>
+          <div class="bg-gray-100 rounded p-2 text-sm overflow-x-auto summary-html">{@html queryResponseContent}</div>
+          <button on:click={copyQueryResponse} class="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded mt-2 text-xs">Copy Answer</button>
+        </div>
+      {/if}
+      {#if queryError}
+        <p class="text-red-600 text-sm mt-2">{queryError}</p>
+      {/if}
+      {#if qaLog.length > 0}
+        <div class="mt-4">
+          <h2 class="text-md font-semibold mb-2">Previous Questions & Answers</h2>
+          <ul class="space-y-2">
+            {#each qaLog as qa}
+              <li class="bg-gray-50 rounded p-2 text-xs">
+                <div class="font-semibold text-gray-700 mb-1">Q: {qa.question}</div>
+                <div class="summary-html">{@html marked.parse(qa.answer)}</div>
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
+    </div>
   {/if}
   {#if summaryLoading || progressMessage}
     <div class="mt-2">
@@ -372,7 +578,6 @@
       {/if}
     </div>
   {/if}
-
   {#if error}
     <p class="text-red-600 text-sm mt-2">{error}</p>
   {/if}
