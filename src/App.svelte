@@ -2,7 +2,21 @@
   import OpenAI from 'openai';
   import { marked } from 'marked';
   import { createTranscriptHtml } from './lib/htmlTemplates';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
+  let topBarRef: HTMLDivElement;
+  let footerBarRef: HTMLDivElement;
+  $: if (topBarRef && footerBarRef && outputRef) {
+    outputRef.style.position = 'absolute';
+    outputRef.style.top = `${topBarRef.offsetHeight}px`;
+    outputRef.style.bottom = `${footerBarRef.offsetHeight}px`;
+    outputRef.style.left = '0';
+    outputRef.style.right = '0';
+    outputRef.style.overflowY = 'auto';
+    outputRef.style.overflowX = 'hidden';
+    outputRef.style.height = '';
+    outputRef.style.paddingTop = '';
+    outputRef.style.paddingBottom = '';
+  }
 
   let loading = false;
   let error = '';
@@ -11,20 +25,76 @@
   let savedApiKey = '';
   let isApiKeySet = false;
 
-  let showTranscript = false;
-  let showSummary = false;
-  let transcriptContent = '';
-  let summaryContent = '';
   let videoId = '';
   let progress = 0;
   let progressMessage = '';
 
   let queryLoading = false;
   let queryError = '';
-  let showQueryResponse = false;
   let userQuery = '';
-  let queryResponseContent = '';
   let qaLog = [];
+
+  // --- DOS Console Log State ---
+  type ConsoleEntry = { timestamp: string, type: string, content: string };
+  let consoleLog: ConsoleEntry[] = [];
+  let outputRef: HTMLDivElement;
+
+  function appendToLog(type: string, content: string) {
+    const timestamp = new Date().toLocaleString();
+    consoleLog = [...consoleLog, { timestamp, type, content }];
+  }
+
+  $: if (consoleLog.length && outputRef) {
+    outputRef.scrollTop = outputRef.scrollHeight;
+  }
+
+  let transcriptFetched = false;
+  function scrollToTranscript() {
+    if (outputRef) {
+      const entries = outputRef.querySelectorAll('.console-entry.transcript');
+      if (entries.length > 0) {
+        (entries[0] as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }
+  }
+
+  function scrollToLatestQA() {
+    if (outputRef) {
+      const entries = outputRef.querySelectorAll('.console-entry.qa');
+      if (entries.length > 0) {
+        (entries[entries.length - 1] as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }
+  }
+
+  let summaryFetched = false;
+  function scrollToSummary() {
+    if (outputRef) {
+      const entries = outputRef.querySelectorAll('.console-entry.summary');
+      if (entries.length > 0) {
+        (entries[0] as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }
+  }
+
+  let helpShown = false;
+  function scrollToHelp() {
+    if (outputRef) {
+      const entries = outputRef.querySelectorAll('.console-entry.help');
+      if (entries.length > 0) {
+        (entries[0] as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }
+  }
+
+  let lastTranscriptContent = '';
+  let lastSummaryContent = '';
+  let lastQAContent = '';
+
+  function copyToClipboard(text: string) {
+    navigator.clipboard.writeText(text);
+    appendToLog('system', 'Copied to clipboard!');
+  }
 
   // Initialize OpenAI client
   const openai = new OpenAI({
@@ -32,7 +102,6 @@
     dangerouslyAllowBrowser: true
   });
 
-  // Load saved API key on component mount
   async function loadSavedApiKey() {
     try {
       const result = await chrome.storage.local.get(['openai_api_key']);
@@ -41,55 +110,73 @@
         isApiKeySet = true;
       }
     } catch (error) {
-      console.warn('Could not load saved API key:', error);
+      appendToLog('system', 'Could not load saved API key.');
     }
   }
 
-  // Save API key to Chrome storage
   async function saveApiKey(apiKey: string) {
     try {
       await chrome.storage.local.set({ openai_api_key: apiKey });
       savedApiKey = apiKey;
       isApiKeySet = true;
+      appendToLog('system', 'API key saved.');
     } catch (error) {
-      console.error('Could not save API key:', error);
+      appendToLog('error', 'Could not save API key.');
     }
   }
 
-  // Load API key when component mounts
   loadSavedApiKey();
 
-  // On mount, auto-load cached summary and Q&A log for current video if available
   onMount(async () => {
+    await tick();
+    if (topBarRef && footerBarRef && outputRef) {
+      outputRef.style.position = 'absolute';
+      outputRef.style.top = `${topBarRef.offsetHeight}px`;
+      outputRef.style.bottom = `${footerBarRef.offsetHeight}px`;
+      outputRef.style.left = '0';
+      outputRef.style.right = '0';
+      outputRef.style.overflowY = 'auto';
+      outputRef.style.overflowX = 'hidden';
+      outputRef.style.height = '';
+      outputRef.style.paddingTop = '';
+      outputRef.style.paddingBottom = '';
+    }
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab.id) return;
       const response = await chrome.tabs.sendMessage(tab.id, { type: 'GET_VIDEO_ID' });
       videoId = response.videoId;
       if (!videoId) return;
+      // Load cached summary
       const cachedKey = `summary_${videoId}`;
       const cached = await chrome.storage.local.get([cachedKey]);
       if (cached[cachedKey]) {
-        summaryContent = marked.parse(cached[cachedKey]);
-        showSummary = true;
-        showTranscript = false;
-        summaryLoading = false;
-        progressMessage = 'Loaded from cache.';
+        lastSummaryContent = cached[cachedKey];
+        appendToLog('summary', marked.parse(cached[cachedKey]));
       }
       // Load Q&A log
       const qaKey = `qa_${videoId}`;
       const qaCached = await chrome.storage.local.get([qaKey]);
       qaLog = qaCached[qaKey] || [];
+      if (qaLog.length > 0) {
+        qaLog.forEach(qa => {
+          appendToLog('qa', `<b>Q:</b> ${qa.question}<br/><b>A:</b> ${marked.parse(qa.answer)}`);
+        });
+      }
     } catch (e) {
       // Ignore errors (e.g., not on a YouTube page)
     }
   });
 
   async function handleShowTranscript() {
+    showQASection = false;
+    qaSectionMessage = '';
+    if (transcriptFetched) {
+      scrollToTranscript();
+      return;
+    }
     loading = true;
     error = '';
-    showTranscript = false;
-    showSummary = false;
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab.id) throw new Error('No active tab found');
@@ -98,44 +185,29 @@
       const transcript = response.transcript;
       if (!videoId) throw new Error('No video ID found. Make sure you are on a YouTube video page.');
       if (!transcript) throw new Error('No transcript found. This video might not have captions available, or you may need to open the transcript panel first.');
-
-      // Format transcript: insert line breaks at sentence boundaries
       function formatTranscript(text: string) {
         return text.replace(/([.!?])\s+/g, '$1\n');
       }
-      transcriptContent = formatTranscript(transcript);
-      showTranscript = true;
-      showSummary = false;
-
-      // Copy to clipboard in the popup (optional, on button click below)
+      const transcriptContent = formatTranscript(transcript);
+      lastTranscriptContent = transcriptContent;
+      appendToLog('transcript', marked.parse(transcriptContent));
+      transcriptFetched = true;
     } catch (err) {
-      error = err instanceof Error ? err.message : 'An error occurred';
+      appendToLog('error', err instanceof Error ? err.message : 'An error occurred');
     } finally {
       loading = false;
     }
   }
 
-  function copyTranscript() {
-    if (transcriptContent) {
-      navigator.clipboard.writeText(transcriptContent).catch(() => {});
-    }
-  }
-
-  function copySummary() {
-    if (summaryContent) {
-      // Copy plain text version
-      const plain = new DOMParser().parseFromString(summaryContent, 'text/html').body.textContent || '';
-      navigator.clipboard.writeText(plain).catch(() => {});
-    }
-  }
-
   async function handleGenerateSummary() {
+    showQASection = false;
+    qaSectionMessage = '';
+    if (summaryFetched) {
+      scrollToSummary();
+      return;
+    }
     summaryLoading = true;
     summaryError = '';
-    showSummary = false;
-    showTranscript = false;
-    transcriptContent = '';
-    summaryContent = '';
     progress = 0;
     progressMessage = '';
     try {
@@ -146,30 +218,27 @@
       const transcript = response.transcript;
       if (!videoId) throw new Error('No video ID found. Make sure you are on a YouTube video page.');
       if (!transcript) throw new Error('No transcript found. This video might not have captions available, or you may need to open the transcript panel first.');
-
       // Caching: Check for cached summary
       const cachedKey = `summary_${videoId}`;
       const cached = await chrome.storage.local.get([cachedKey]);
       if (cached[cachedKey]) {
-        summaryContent = marked.parse(cached[cachedKey]);
-        showSummary = true;
-        summaryLoading = false;
-        progressMessage = 'Loaded from cache.';
+        lastSummaryContent = cached[cachedKey];
+        appendToLog('summary', marked.parse(cached[cachedKey]));
+        summaryFetched = true;
         return;
       }
       progressMessage = 'Generating new summary...';
-
       let apiKey = savedApiKey;
       if (!apiKey) {
         const newApiKey = prompt('Please enter your OpenAI API key:');
         if (!newApiKey) {
-          summaryError = 'API key is required to generate summary.';
+          appendToLog('error', 'API key is required to generate summary.');
           return;
         }
         apiKey = newApiKey;
       }
       if (!apiKey.startsWith('sk-') || apiKey.length < 20) {
-        summaryError = 'Invalid API key format. Please enter a valid OpenAI API key that starts with "sk-".';
+        appendToLog('error', 'Invalid API key format. Please enter a valid OpenAI API key that starts with "sk-".');
         return;
       }
       if (apiKey !== savedApiKey) {
@@ -277,42 +346,25 @@
         summary = finalCompletion.choices[0]?.message?.content || '';
       }
       if (!summary) throw new Error('No summary generated');
-      // Cache the new summary
       await chrome.storage.local.set({ [cachedKey]: summary });
-      summaryContent = marked.parse(summary);
-      showSummary = true;
-      showTranscript = false;
+      lastSummaryContent = summary;
+      appendToLog('summary', marked.parse(summary));
+      summaryFetched = true;
       progress = 100;
       progressMessage = 'Summary generated.';
     } catch (err) {
-      summaryError = err instanceof Error ? err.message : 'An error occurred';
+      appendToLog('error', err instanceof Error ? err.message : 'An error occurred');
       progressMessage = '';
     } finally {
       summaryLoading = false;
     }
   }
 
-  async function handleRefreshSummary() {
-    if (!videoId) return;
-    const cachedKey = `summary_${videoId}`;
-    await chrome.storage.local.remove([cachedKey]);
-    await handleGenerateSummary();
-  }
-
-  function copyQueryResponse() {
-    if (queryResponseContent) {
-      const plain = new DOMParser().parseFromString(queryResponseContent, 'text/html').body.textContent || '';
-      navigator.clipboard.writeText(plain).catch(() => {});
-    }
-  }
-
   async function handleAskQuestion() {
     queryLoading = true;
     queryError = '';
-    showQueryResponse = false;
-    queryResponseContent = '';
+    progress = 0;
     try {
-      // Reuse transcript fetching logic
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab.id) throw new Error('No active tab found');
       const response = await chrome.tabs.sendMessage(tab.id, { type: 'GET_VIDEO_ID' });
@@ -320,19 +372,17 @@
       const transcript = response.transcript;
       if (!videoId) throw new Error('No video ID found. Make sure you are on a YouTube video page.');
       if (!transcript) throw new Error('No transcript found. This video might not have captions available, or you may need to open the transcript panel first.');
-
-      // API key handling (reuse from summary)
       let apiKey = savedApiKey;
       if (!apiKey) {
         const newApiKey = prompt('Please enter your OpenAI API key:');
         if (!newApiKey) {
-          queryError = 'API key is required.';
+          appendToLog('error', 'API key is required.');
           return;
         }
         apiKey = newApiKey;
       }
       if (!apiKey.startsWith('sk-') || apiKey.length < 20) {
-        queryError = 'Invalid API key format.';
+        appendToLog('error', 'Invalid API key format.');
         return;
       }
       if (apiKey !== savedApiKey) {
@@ -343,25 +393,21 @@
         apiKey: apiKey.trim(),
         dangerouslyAllowBrowser: true
       });
-
       if (!userQuery || userQuery.trim().length < 2) {
-        queryError = 'Please enter a question.';
+        appendToLog('error', 'Please enter a question.');
         return;
       }
-
-      // Check for cached answer (case-insensitive match)
       const qaKey = `qa_${videoId}`;
       const qaCached = await chrome.storage.local.get([qaKey]);
       qaLog = qaCached[qaKey] || [];
       const cachedQA = qaLog.find(q => q.question.trim().toLowerCase() === userQuery.trim().toLowerCase());
       if (cachedQA) {
-        queryResponseContent = marked.parse(cachedQA.answer);
-        showQueryResponse = true;
-        queryLoading = false;
+        lastQAContent = cachedQA.answer;
+        appendToLog('qa', `<b>Q:</b> ${userQuery}<br/><b>A:</b> ${marked.parse(cachedQA.answer)}`);
+        await tick();
+        scrollToLatestQA();
         return;
       }
-
-      // Reuse chunking function
       function chunkTranscript(text, maxTokens = 8000) {
         const words = text.split(' ');
         const chunks = [];
@@ -378,15 +424,15 @@
         return chunks;
       }
       const transcriptChunks = chunkTranscript(transcript);
-
       let answer = '';
       if (transcriptChunks.length === 1) {
+        progress = 50;
         const completion = await freshOpenAI.chat.completions.create({
           model: "gpt-4o-mini",
           messages: [
             {
               role: "system",
-              content: "You are a helpful assistant that answers questions accurately based only on the provided transcript. Be concise, neutral, and stick to the facts from the text. If the question can't be answered from the transcript, say so."
+              content: `You are a helpful assistant that answers questions based on the provided transcript. If the transcript directly answers the question, provide a concise, factual answer. If the transcript does not directly answer the question, first state that the transcript does not explicitly cover the question. Then, based on the principles, themes, or content of the transcript, provide a likely or inferred answer, making it clear that this is an inference.`
             },
             {
               role: "user",
@@ -397,8 +443,10 @@
           temperature: 0.5,
         });
         answer = completion.choices[0]?.message?.content || '';
+        progress = 100;
       } else {
         // Chunk handling: Summarize chunks first (reuse parallelization from optimizations)
+        progress = 10;
         const chunkSummaries = await Promise.all(
           transcriptChunks.map(async (chunk, i) => {
             try {
@@ -417,6 +465,7 @@
                 max_tokens: 500,
                 temperature: 0.5,
               });
+              progress = Math.round(10 + ((i + 1) / transcriptChunks.length) * 60);
               return completion.choices[0]?.message?.content || '';
             } catch (error) {
               return `[Error in part ${i + 1}]`;
@@ -424,14 +473,13 @@
           })
         );
         const combinedSummaries = chunkSummaries.join('\n\n');
-
-        // Final query on combined summaries
+        progress = 80;
         const finalCompletion = await freshOpenAI.chat.completions.create({
           model: "gpt-4o-mini",
           messages: [
             {
               role: "system",
-              content: "You are a helpful assistant that answers questions accurately based only on the provided summarized transcript. Be concise, neutral, and stick to the facts. If the question can't be answered, say so."
+              content: `You are a helpful assistant that answers questions based on the provided summarized transcript. If the summarized transcript directly answers the question, provide a concise, factual answer. If the summarized transcript does not directly answer the question, first state that the transcript does not explicitly cover the question. Then, based on the principles, themes, or content of the transcript, provide a likely or inferred answer, making it clear that this is an inference.`
             },
             {
               role: "user",
@@ -442,195 +490,673 @@
           temperature: 0.5,
         });
         answer = finalCompletion.choices[0]?.message?.content || '';
+        progress = 100;
       }
-
       if (!answer) throw new Error('No answer generated');
-      queryResponseContent = marked.parse(answer);
-      showQueryResponse = true;
+      lastQAContent = answer;
+      appendToLog('qa', `<b>Q:</b> ${userQuery}<br/><b>A:</b> ${marked.parse(answer)}`);
+      await tick();
+      scrollToLatestQA();
       // Save to Q&A log
       const newQA = { question: userQuery.trim(), answer, timestamp: Date.now() };
       qaLog = [...qaLog, newQA];
       await chrome.storage.local.set({ [qaKey]: qaLog });
+      // Clear the QA section message if a question has been asked
+      if (showQASection && qaLog.length > 0) {
+        qaSectionMessage = '';
+      }
     } catch (err) {
-      queryError = err instanceof Error ? err.message : 'An error occurred';
+      appendToLog('error', err instanceof Error ? err.message : 'An error occurred');
     } finally {
       queryLoading = false;
+      progress = 0;
     }
+  }
+
+  async function handleRefresh() {
+    showQASection = false;
+    qaSectionMessage = '';
+    if (!videoId) return;
+    const summaryKey = `summary_${videoId}`;
+    const qaKey = `qa_${videoId}`;
+    // Remove from Chrome storage
+    await chrome.storage.local.remove([summaryKey, qaKey]);
+    // Remove summary and Q/A entries from log
+    consoleLog = consoleLog.filter(e => e.type !== 'summary' && e.type !== 'qa');
+    summaryFetched = false;
+    showQASection = false;
+    // Optionally reset Q/A log
+    qaLog = [];
+    // Generate new summary
+    handleGenerateSummary();
+  }
+
+  function handleHelp() {
+    showQASection = false;
+    qaSectionMessage = '';
+    if (helpShown) {
+      scrollToHelp();
+      return;
+    }
+    appendToLog('help', `Commands: <b>transcript</b>, <b>summary</b>, <b>ask</b>, <b>key</b>, <b>help/contact</b><br/>- transcript: Show full transcript<br/>- summary: Generate AI summary<br/>- ask: Ask a question about the transcript<br/>- key: Set OpenAI API key<br/>- help/contact: Open help and contact form<br/><a href='https://forms.gle/EFEdwasbURJjuGew6' target='_blank' rel='noopener noreferrer' class='google-form-link'>Open Feedback & Contact Form</a>`);
+    helpShown = true;
+  }
+
+  let showApiKeyModal = false;
+  let apiKeyInput = '';
+  let apiKeyError = '';
+  function handleKey() {
+    showQASection = false;
+    qaSectionMessage = '';
+    apiKeyInput = savedApiKey || '';
+    apiKeyError = '';
+    showApiKeyModal = true;
+  }
+
+  async function saveApiKeyFromModal() {
+    if (!apiKeyInput.startsWith('sk-') || apiKeyInput.length < 20) {
+      apiKeyError = 'Invalid API key format. Must start with "sk-" and be at least 20 characters.';
+      return;
+    }
+    await saveApiKey(apiKeyInput);
+    showApiKeyModal = false;
+  }
+  function cancelApiKeyModal() {
+    showApiKeyModal = false;
+    apiKeyError = '';
+  }
+
+  let qaSectionMessage = '';
+  let showQASection = false;
+  function handleQASection() {
+    const qaCount = consoleLog.filter(e => e.type === 'qa').length;
+    showQASection = true;
+    qaSectionMessage = qaCount === 0 ? 'No questions have been asked yet.' : '';
+    // Scroll to first Q/A entry
+    setTimeout(() => {
+      if (outputRef) {
+        const entries = outputRef.querySelectorAll('.console-entry.qa');
+        if (entries.length > 0) {
+          (entries[0] as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }
+    }, 0);
+  }
+  function exitQASection() {
+    showQASection = false;
+    qaSectionMessage = '';
   }
 </script>
 
-<main class="p-4 w-[500px]">
-  <h1 class="text-lg font-bold mb-2">TLDW</h1>
-  <button
-    on:click={handleShowTranscript}
-    disabled={loading}
-    class="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white px-4 py-2 rounded flex items-center w-full mb-3"
-  >
-    {#if loading}
-      <svg class="animate-spin h-5 w-5 mr-2 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path></svg>
-      Loading transcript...
-    {:else}
-      Show Full Transcript
-    {/if}
-  </button>
-  <button
-    on:click={handleGenerateSummary}
-    disabled={summaryLoading}
-    class="bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white px-4 py-2 rounded flex items-center w-full mb-3"
-  >
-    {#if summaryLoading}
-      <svg class="animate-spin h-5 w-5 mr-2 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path></svg>
-      Generating summary...
-    {:else}
-      Generate AI Summary
-    {/if}
-  </button>
-  <button
-    on:click={async () => {
-      const newApiKey = prompt('Enter your OpenAI API key:');
-      if (newApiKey && newApiKey.startsWith('sk-') && newApiKey.length >= 20) {
-        await saveApiKey(newApiKey);
-      } else if (newApiKey) {
-        error = 'Invalid API key format. Must start with "sk-" and be at least 20 characters.';
-      }
-    }}
-    class="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded flex items-center w-full mt-2 text-sm"
-  >
-    {#if isApiKeySet}
-      🔑 API Key Set (${savedApiKey.substring(0, 8)}...)
-    {:else}
-      🔑 Set API Key
-    {/if}
-  </button>
-
-  {#if showTranscript}
-    <div class="mt-4">
-      <h2 class="text-md font-semibold mb-2">Full Transcript</h2>
-      <pre class="bg-gray-100 rounded p-2 text-sm overflow-x-auto whitespace-pre-wrap w-full">{transcriptContent}</pre>
-      <button on:click={copyTranscript} class="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded mt-2 text-xs">Copy Transcript</button>
+<main class="dos-main">
+  <!-- Top Bar (Fixed) -->
+  <div class="top-bar" bind:this={topBarRef}>
+    <div class="prompt-line">
+      <span class="prompt">C:\TLDW&gt;</span>
+      <button on:click={handleGenerateSummary} disabled={summaryLoading}>summary</button>
+      <button on:click={handleRefresh} disabled={summaryLoading} title="Refresh summary and Q/A">refresh</button>
+      <button on:click={handleQASection}>Q/A</button>
+      <button on:click={handleShowTranscript} disabled={loading}><span style="white-space: pre-line;">full<br/>transcript</span></button>
+      <button on:click={handleKey}>key</button>
+      <button on:click={handleHelp}><span style="white-space: pre-line;">help<br/>contact</span></button>
     </div>
-  {/if}
-
-  {#if showSummary}
-    <div class="mt-4">
-      <h2 class="text-md font-semibold mb-2">AI Summary</h2>
-      <div class="bg-gray-100 rounded p-2 text-sm overflow-x-auto summary-html w-full">{@html summaryContent}</div>
-      <button on:click={copySummary} class="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded mt-2 text-xs">Copy Summary</button>
-      <button on:click={handleRefreshSummary} class="bg-yellow-500 hover:bg-yellow-600 text-white px-3 py-1 rounded mt-2 text-xs ml-2">Refresh Summary</button>
-    </div>
-    <!-- Ask Question UI and Answer Display -->
-    <div class="mt-4">
+    <div class="input-area">
       <input
         type="text"
-        placeholder="Ask a question about the transcript..."
+        placeholder="Type your question and press Enter..."
         bind:value={userQuery}
-        class="w-full p-2 border rounded mb-2"
         on:keydown={(e) => { if (e.key === 'Enter') handleAskQuestion(); }}
         disabled={queryLoading}
       />
-      <button
-        on:click={handleAskQuestion}
-        disabled={queryLoading}
-        class="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 text-white px-4 py-2 rounded flex items-center w-full mb-3"
-      >
-        {#if queryLoading}
-          <svg class="animate-spin h-5 w-5 mr-2 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path></svg>
-          Answering question...
-        {:else}
-          Ask Question about Transcript
+      <button on:click={handleAskQuestion} disabled={queryLoading || !userQuery.trim()}>ask</button>
+    </div>
+  </div>
+  {#if showApiKeyModal}
+    <div class="modal-overlay">
+      <div class="api-key-modal">
+        <div class="api-key-modal-header">
+          <span>Enter your OpenAI API key</span>
+          <button class="close-btn" on:click={cancelApiKeyModal}>&times;</button>
+        </div>
+        <textarea
+          bind:value={apiKeyInput}
+          placeholder="sk-..."
+          rows="3"
+          spellcheck="false"
+          class="api-key-textarea"
+        ></textarea>
+        {#if apiKeyError}
+          <div class="api-key-error">{apiKeyError}</div>
         {/if}
-      </button>
-      {#if showQueryResponse}
-        <div class="mt-4">
-          <h2 class="text-md font-semibold mb-2">Answer to: {userQuery}</h2>
-          <div class="bg-gray-100 rounded p-2 text-sm overflow-x-auto summary-html">{@html queryResponseContent}</div>
-          <button on:click={copyQueryResponse} class="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded mt-2 text-xs">Copy Answer</button>
+        <div class="api-key-modal-actions">
+          <button on:click={saveApiKeyFromModal}>Save</button>
+          <button on:click={cancelApiKeyModal}>Cancel</button>
         </div>
-      {/if}
-      {#if queryError}
-        <p class="text-red-600 text-sm mt-2">{queryError}</p>
-      {/if}
-      {#if qaLog.length > 0}
-        <div class="mt-4">
-          <h2 class="text-md font-semibold mb-2">Previous Questions & Answers</h2>
-          <ul class="space-y-2">
-            {#each qaLog as qa}
-              <li class="bg-gray-50 rounded p-2 text-xs">
-                <div class="font-semibold text-gray-700 mb-1">
-                  Q: {qa.question}
-                  {#if qa.timestamp}
-                    <span class="text-gray-400 ml-2">({new Date(qa.timestamp).toLocaleString()})</span>
-                  {/if}
-                </div>
-                <div class="summary-html">{@html marked.parse(qa.answer)}</div>
-              </li>
-            {/each}
-          </ul>
-        </div>
-      {/if}
+      </div>
     </div>
   {/if}
-  {#if summaryLoading || progressMessage}
-    <div class="mt-2">
-      {#if progressMessage}
-        <p class="text-gray-700 text-xs">{progressMessage}</p>
+  <!-- Console Output (Scrollable Middle) -->
+  <div class="console-output" bind:this={outputRef}>
+    {#if showQASection}
+      <div class="qa-header">
+        <span>Q/A Section</span>
+        <button class="exit-qa-btn" on:click={exitQASection}>Exit Q/A</button>
+      </div>
+      {#each consoleLog as entry, i}
+        {#if entry.type === 'qa'}
+          <pre class="console-entry qa">----- [{entry.timestamp}] Q/A -----
+{@html entry.content}
+{#if i === consoleLog.findLastIndex(e => e.type === 'qa') && lastQAContent}
+  <button class="copy-btn" on:click={() => copyToClipboard(lastQAContent)}>Copy Answer</button>
+{/if}
+</pre>
+        {/if}
+      {/each}
+      {#if qaSectionMessage}
+        <div class="qa-section-message">{qaSectionMessage}</div>
       {/if}
-      {#if summaryLoading && progress > 0 && progress < 100}
-        <div class="w-full bg-gray-200 rounded h-2 mt-1">
-          <div class="bg-blue-500 h-2 rounded" style="width: {progress}%"></div>
+    {:else}
+      {#each consoleLog as entry, i}
+        {#if entry.type === 'help'}
+          <div class="console-entry help help-block">
+            <div>{@html entry.content}</div>
+          </div>
+        {:else}
+          <pre class="console-entry {entry.type}">----- [{entry.timestamp}] {entry.type.toUpperCase()} -----
+{@html entry.content}
+{#if entry.type === 'transcript' && i === consoleLog.findLastIndex(e => e.type === 'transcript') && lastTranscriptContent}
+  <button class="copy-btn" on:click={() => copyToClipboard(lastTranscriptContent)}>Copy Transcript</button>
+{:else if entry.type === 'summary' && i === consoleLog.findLastIndex(e => e.type === 'summary') && lastSummaryContent}
+  <button class="copy-btn" on:click={() => copyToClipboard(lastSummaryContent)}>Copy Summary</button>
+{:else if entry.type === 'qa' && i === consoleLog.findLastIndex(e => e.type === 'qa') && lastQAContent}
+  <button class="copy-btn" on:click={() => copyToClipboard(lastQAContent)}>Copy Answer</button>
+{/if}
+</pre>
+        {/if}
+      {/each}
+      {#if qaSectionMessage}
+        <div class="qa-section-message">{qaSectionMessage}</div>
+      {/if}
+      {#if loading || summaryLoading || queryLoading}
+        <span class="loading-cursor">Processing</span>
+      {/if}
+    {/if}
+  </div>
+  <!-- Footer Bar (Fixed) -->
+  <div class="footer-bar" bind:this={footerBarRef}>
+    <span>API Key: {isApiKeySet ? 'SET' : 'NOT SET'} | v1.0 | TLDW DOS UI</span>
+    {#if queryLoading}
+      <span class="progress-bar-area">
+        <span class="progress-label">Processing...</span>
+        <span class="progress-percent">{progress}%</span>
+        <div class="progress-bar">
+          <div class="progress-bar-inner" style="width: {progress}%;"></div>
         </div>
-        <p class="text-xs text-gray-500 mt-1">{progress}% complete</p>
-      {/if}
-    </div>
-  {/if}
-  {#if error}
-    <p class="text-red-600 text-sm mt-2">{error}</p>
-  {/if}
-  {#if summaryError}
-    <p class="text-red-600 text-sm mt-2">{summaryError}</p>
-  {/if}
+      </span>
+    {/if}
+    {#if loading || summaryLoading}
+      <span class="progress-bar-area">
+        <span class="progress-label">Processing...</span>
+      </span>
+    {/if}
+  </div>
 </main>
 
 <style>
-.summary-html :global(h1),
-.summary-html :global(h2),
-.summary-html :global(h3),
-.summary-html :global(h4),
-.summary-html :global(h5),
-.summary-html :global(h6) {
-  color: #1f2937;
-  margin-top: 1.5em;
-  margin-bottom: 0.5em;
-  font-weight: 600;
+@import url('https://fonts.googleapis.com/css2?family=Fira+Mono:wght@400;500;700&display=swap');
+:global(body) {
+  background-color: #000;
+  color: #00FF00;
+  font-family: 'Fira Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
+  font-size: 15px;
+  margin: 0;
+  padding: 0;
+  height: auto;
+  min-height: auto;
+  overflow: hidden;
+  text-shadow: 0 0 5px #00FF00, 0 0 10px #00FF00;
+  position: relative;
 }
-.summary-html :global(ul),
-.summary-html :global(ol) {
-  margin: 0.5em 0;
-  padding-left: 1.5em;
+.dos-main {
+  width: 625px;
+  height: 600px;
+  min-height: unset;
+  display: block;
+  box-sizing: border-box;
+  border: 2px solid #00FF00;
+  box-shadow: 0 0 20px #00FF0044;
+  margin: 0 auto;
+  position: relative;
+  background: #000;
+  overflow: hidden;
 }
-.summary-html :global(li) {
-  margin: 0.3em 0;
+.prompt-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  padding: 8px 10px 0 10px;
+  font-size: 1.1em;
+  border-bottom: 1px solid #00FF00;
+  background: #000;
+  z-index: 2;
+  flex: 0 0 auto;
 }
-.summary-html :global(strong),
-.summary-html :global(b) {
-  font-weight: 600;
-  color: #1f2937;
+.prompt {
+  margin-right: 10px;
+  font-weight: bold;
 }
-.summary-html :global(em),
-.summary-html :global(i) {
-  font-style: italic;
+button {
+  background: none;
+  border: none;
+  color: #00FF00;
+  font-family: inherit;
+  font-size: 1em;
+  cursor: pointer;
+  text-decoration: underline;
+  margin-right: 10px;
+  padding: 2px 6px;
+  transition: text-shadow 0.2s;
 }
-.summary-html :global(code) {
-  background: #e5e7eb;
-  padding: 0.2em 0.4em;
+button:hover {
+  text-shadow: 0 0 10px #00FF00, 0 0 20px #00FF00;
+}
+button:disabled {
+  color: #008000;
+  text-decoration: none;
+  cursor: not-allowed;
+}
+.input-area {
+  display: flex;
+  align-items: center;
+  padding: 8px 10px;
+  background: #000;
+  border-bottom: 1px solid #00FF00;
+  z-index: 2;
+  flex: 0 0 auto;
+}
+.input-area input {
+  background: #000;
+  border: 1px solid #00FF00;
+  color: #00FF00;
+  font-family: inherit;
+  font-size: 1em;
+  padding: 4px 8px;
+  flex: 1;
+  margin-right: 8px;
+  outline: none;
+  box-shadow: 0 0 4px #00FF0044;
+}
+.console-output {
+  background: #000;
+  border: none;
+  position: absolute;
+  z-index: 1;
+  max-width: 100%;
+  box-sizing: border-box;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 10px;
+  /* top, bottom, left, right, overflow-y, overflow-x set dynamically by script */
+}
+.console-entry {
+  margin-bottom: 12px;
+  color: #00FF00;
+  text-shadow: 0 0 5px #00FF00, 0 0 10px #00FF00;
+  word-break: break-word;
+  white-space: pre-wrap;
+  max-width: 100%;
+}
+.console-entry.error {
+  color: #FF00FF;
+  text-shadow: 0 0 8px #FF00FF;
+}
+.console-entry.help {
+  color: #00FFFF;
+  text-shadow: 0 0 8px #00FFFF;
+}
+.copy-btn {
+  color: #00FF00;
+  background: none;
+  border: none;
+  text-decoration: underline;
+  cursor: pointer;
+  margin-left: 10px;
+  font-size: 0.9em;
+}
+.copy-btn:hover {
+  text-shadow: 0 0 10px #00FF00;
+}
+.loading-cursor::after {
+  content: '_';
+  animation: blink 1s step-end infinite;
+}
+@keyframes blink {
+  50% { opacity: 0; }
+}
+.footer-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  z-index: 20;
+  background: #000;
+  border-top: 1px solid #00FF00;
+  color: #00FF00;
+  font-size: 0.95em;
+  padding: 4px 10px;
+  text-align: left;
+  letter-spacing: 1px;
+  min-height: 24px;
+  /* min-height: 24px; */
+}
+/* Scanlines effect */
+.dos-main::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 600px;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0px,
+    transparent 1px,
+    rgba(0, 0, 0, 0.5) 1px,
+    rgba(0, 0, 0, 0.5) 2px
+  );
+  pointer-events: none;
+  opacity: 0.25;
+  z-index: 10;
+}
+/* Make summary and Q/A text white for readability, no glow */
+.console-entry.summary,
+.console-entry.qa {
+  color: #FFF;
+  text-shadow: none;
+}
+.console-entry.transcript {
+  color: #FFF;
+  text-shadow: none;
+}
+.qa-section-message {
+  color: #FFF;
+  background: #111;
+  padding: 8px 12px;
+  border: 1px solid #FFF;
+  border-radius: 4px;
+  margin: 10px 0;
+  text-align: center;
+  font-size: 1.1em;
+  box-shadow: 0 0 4px #FFF2;
+}
+.qa-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 1.2em;
+  color: #FFF;
+  border-bottom: 1px solid #FFF;
+  margin-bottom: 10px;
+  padding-bottom: 4px;
+}
+.exit-qa-btn {
+  color: #FFF;
+  background: #222;
+  border: 1px solid #FFF;
   border-radius: 3px;
-  font-family: monospace;
+  padding: 2px 10px;
+  font-size: 1em;
+  cursor: pointer;
+  margin-left: 10px;
+  text-decoration: none;
 }
-.summary-html :global(blockquote) {
-  border-left: 4px solid #3b82f6;
-  margin: 1em 0;
-  padding-left: 1em;
-  color: #6b7280;
+.exit-qa-btn:hover {
+  background: #444;
+  color: #00FF00;
+}
+.progress-bar-area {
+  display: inline-block;
+  margin-left: 20px;
+  vertical-align: middle;
+}
+.progress-label {
+  color: #FFF;
+  margin-right: 8px;
+  font-size: 0.95em;
+}
+.progress-percent {
+  color: #FFF;
+  margin-right: 8px;
+  font-size: 0.95em;
+}
+.progress-bar {
+  display: inline-block;
+  width: 80px;
+  height: 8px;
+  background: #222;
+  border: 1px solid #FFF;
+  border-radius: 4px;
+  overflow: hidden;
+  vertical-align: middle;
+}
+.progress-bar-inner {
+  height: 100%;
+  background: linear-gradient(90deg, #00FF00 0%, #FFF 100%);
+  width: 0%;
+  transition: width 0.2s;
+}
+.contact-form-modal {
+  position: absolute;
+  top: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #111;
+  border: 2px solid #00FF00;
+  border-radius: 8px;
+  box-shadow: 0 0 20px #00FF0044;
+  padding: 20px 24px 16px 24px;
+  z-index: 100;
+  width: 350px;
+  max-width: 95vw;
+}
+.contact-form-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 1.2em;
+  color: #00FF00;
+  margin-bottom: 10px;
+}
+.close-btn {
+  background: none;
+  border: none;
+  color: #00FF00;
+  font-size: 1.3em;
+  cursor: pointer;
+  margin-left: 10px;
+  text-decoration: none;
+}
+.close-btn:hover {
+  color: #FFF;
+}
+.contact-form-modal input,
+.contact-form-modal textarea {
+  width: 100%;
+  margin-bottom: 10px;
+  padding: 6px 8px;
+  border: 1px solid #00FF00;
+  border-radius: 3px;
+  background: #000;
+  color: #00FF00;
+  font-family: inherit;
+  font-size: 1em;
+  box-shadow: 0 0 4px #00FF0044;
+}
+.contact-form-modal textarea {
+  min-height: 60px;
+  resize: vertical;
+}
+.contact-form-modal button[type="submit"] {
+  background: #00FF00;
+  color: #000;
+  border: none;
+  border-radius: 3px;
+  padding: 6px 18px;
+  font-size: 1em;
+  font-family: inherit;
+  cursor: pointer;
+  font-weight: bold;
+  margin-top: 4px;
+}
+.contact-form-modal button[type="submit"]:hover {
+  background: #FFF;
+  color: #00FF00;
+}
+.contact-form-confirmation {
+  background: #111;
+  color: #00FF00;
+  border: 1px solid #00FF00;
+  border-radius: 4px;
+  padding: 12px 16px;
+  margin: 18px auto;
+  text-align: center;
+  font-size: 1.1em;
+  width: 350px;
+  max-width: 95vw;
+  box-shadow: 0 0 8px #00FF0044;
+}
+.help-block {
+  background: #001a1a;
+  border: 1px solid #00FFFF;
+  border-radius: 6px;
+  padding: 14px 18px 14px 18px;
+  margin-bottom: 16px;
+  color: #00FFFF;
+  box-shadow: 0 0 8px #00FFFF44;
+  position: relative;
+  font-size: 1.05em;
+}
+.contact-btn {
+  display: block;
+  margin: 16px auto 0 auto;
+  background: #00FFFF;
+  color: #000;
+  border: none;
+  border-radius: 4px;
+  padding: 7px 22px;
+  font-size: 1.1em;
+  font-family: inherit;
+  cursor: pointer;
+  font-weight: bold;
+  box-shadow: 0 0 6px #00FFFF44;
+  transition: background 0.2s, color 0.2s;
+}
+.contact-btn:hover {
+  background: #FFF;
+  color: #00FFFF;
+}
+.contact-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0,0,0,0.55);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.contact-form-centered {
+  position: relative;
+  top: unset;
+  left: unset;
+  transform: none;
+  margin: 0 auto;
+  box-shadow: 0 0 24px #00FF0044, 0 0 0 100vmax rgba(0,0,0,0.2);
+}
+.contact-error {
+  color: #FF00FF;
+  background: #111;
+  border: 1px solid #FF00FF;
+  border-radius: 4px;
+  padding: 10px 14px;
+  margin-top: 12px;
+  text-align: center;
+  font-size: 1em;
+}
+.google-form-link {
+  color: #00FFFF;
+  text-decoration: underline;
+  font-weight: bold;
+  display: inline-block;
+  margin-top: 10px;
+  font-size: 1.1em;
+}
+.google-form-link:hover {
+  color: #FFF;
+}
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0,0,0,0.7);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.api-key-modal {
+  background: #111;
+  border: 2px solid #00FF00;
+  border-radius: 8px;
+  box-shadow: 0 0 20px #00FF0044;
+  padding: 24px 28px 18px 28px;
+  z-index: 10000;
+  width: 420px;
+  max-width: 95vw;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+.api-key-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 1.1em;
+  color: #00FF00;
+  margin-bottom: 10px;
+}
+.api-key-textarea {
+  width: 100%;
+  min-height: 48px;
+  resize: vertical;
+  border: 1px solid #00FF00;
+  border-radius: 3px;
+  background: #000;
+  color: #00FF00;
+  font-family: inherit;
+  font-size: 1em;
+  box-shadow: 0 0 4px #00FF0044;
+  margin-bottom: 10px;
+  padding: 6px 8px;
+}
+.api-key-error {
+  color: #FF00FF;
+  background: #111;
+  border: 1px solid #FF00FF;
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  text-align: center;
+  font-size: 1em;
+}
+.api-key-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
 }
 </style>
 

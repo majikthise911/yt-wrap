@@ -8,7 +8,8 @@ export default defineConfig({
     viteStaticCopy({
       targets: [
         { src: 'public/summary.html', dest: '.' },
-        { src: 'public/summary.js', dest: '.' }
+        { src: 'public/summary.js', dest: '.' },
+        { src: 'icons', dest: '.' }
       ]
     })
   ],
